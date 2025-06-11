@@ -13,6 +13,14 @@ Last Tested : 4 June 2025 1:50PM GMT8+
 
 - **Database Cleaning**: Remove Augment-related entries from VS Code databases
 - **Telemetry ID Modification**: Generate random telemetry IDs for VS Code to enhance privacy
+- **Multi-Installation Support**: Automatically detects and supports multiple VS Code variants:
+  - Standard VS Code
+  - VS Code Insiders
+  - VS Code Server (Remote Development)
+  - VS Code Server Insiders
+  - VSCodium
+  - Code-OSS
+- **Smart Path Detection**: Priority-based detection finds the first available VS Code installation
 - **Cross-Platform Support**: Works on Windows, macOS, and Linux
 - **Python-Based**: Uses Python for better cross-platform compatibility
 - **Virtual Environment**: Isolates dependencies to avoid conflicts
@@ -137,6 +145,24 @@ This will:
 - Create a backup of the original file
 - Update the file with the new random values
 
+### List VS Code Installations
+
+To see all detected VS Code installations:
+
+```bash
+# If using the virtual environment (recommended)
+.venv/bin/augment-vip list-installations  # macOS/Linux
+.venv\Scripts\augment-vip list-installations  # Windows
+
+# If installed globally
+augment-vip list-installations
+```
+
+This will show:
+- All detected VS Code installations and their types
+- File paths for storage.json and state.vscdb
+- Whether the required files exist
+
 ### Run All Tools
 
 To run both tools at once:
@@ -170,15 +196,22 @@ augment-vip/
 
 ## 🔍 How It Works
 
-The database cleaning tool works by:
+The tool works by:
 
-1. **Finding Database Locations**: Automatically detects the correct paths for VS Code databases based on your operating system.
+1. **Multi-Installation Detection**: Scans for VS Code installations in priority order:
+   - **Windows**: `%APPDATA%\Code\`, `%APPDATA%\Code - Insiders\`, `%USERPROFILE%\.vscode-server\`, etc.
+   - **macOS**: `~/Library/Application Support/Code/`, `~/.vscode-server/`, etc.
+   - **Linux**: `~/.config/Code/`, `~/.vscode-server/`, `~/.vscode-server-insiders/`, etc.
 
-2. **Creating Backups**: Before making any changes, the tool creates a backup of each database file.
+2. **Smart Path Selection**: Uses the first available installation found, with standard VS Code taking priority over server installations.
 
-3. **Cleaning Databases**: Uses SQLite commands to remove entries containing "augment" from the databases.
+3. **Creating Backups**: Before making any changes, the tool creates a backup of each file.
 
-4. **Reporting Results**: Provides detailed feedback about the operations performed.
+4. **Database Cleaning**: Uses SQLite commands to remove entries containing "augment" from the databases.
+
+5. **Telemetry ID Modification**: Updates machineId and devDeviceId in storage.json with random values.
+
+6. **Reporting Results**: Provides detailed feedback about which installation was processed and the operations performed.
 
 ## 🛠️ Troubleshooting
 

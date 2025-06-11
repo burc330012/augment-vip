@@ -5,6 +5,7 @@ VS Code database cleaner module
 import os
 import sys
 import sqlite3
+import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
