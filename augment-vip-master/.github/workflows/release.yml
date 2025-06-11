@@ -1,0 +1,227 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to create release for'
+        required: false
+        default: ''
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Zlocation-detail=none -Zfmt-debug=none"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build:
+    name: Build for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact_name: augment-vip
+            asset_name: augment-vip-linux-x86_64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            artifact_name: augment-vip
+            asset_name: augment-vip-linux-aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: augment-vip.exe
+            asset_name: augment-vip-windows-x86_64.exe
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            artifact_name: augment-vip.exe
+            asset_name: augment-vip-windows-aarch64.exe
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: augment-vip
+            asset_name: augment-vip-macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: augment-vip
+            asset_name: augment-vip-macos-aarch64
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install musl tools (Linux musl targets)
+      if: contains(matrix.target, 'musl')
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y musl-tools musl-dev
+        if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
+          # Use cross-compilation with existing tools and static linking
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+        fi
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        targets: ${{ matrix.target }}
+        components: rust-src
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Set cross-compilation environment (musl targets)
+      if: contains(matrix.target, 'musl')
+      run: |
+        # SQLite configuration for musl compatibility (keep threading for Rust compatibility)
+        SQLITE_FLAGS="-DSQLITE_DISABLE_INTRINSIC=1 -DSQLITE_OMIT_LOAD_EXTENSION=1 -DSQLITE_DISABLE_LFS=1 -DSQLITE_OMIT_WAL=1 -D_FORTIFY_SOURCE=0"
+        echo "SQLITE_DISABLE_INTRINSIC=1" >> $GITHUB_ENV
+        echo "SQLITE_OMIT_LOAD_EXTENSION=1" >> $GITHUB_ENV
+        echo "SQLITE_DISABLE_LFS=1" >> $GITHUB_ENV
+        echo "SQLITE_OMIT_WAL=1" >> $GITHUB_ENV
+        echo "LIBSQLITE3_FLAGS=$SQLITE_FLAGS" >> $GITHUB_ENV
+
+        if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
+          echo "CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "CXX_aarch64_unknown_linux_musl=aarch64-linux-gnu-g++" >> $GITHUB_ENV
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=-C target-feature=+crt-static -C link-self-contained=yes" >> $GITHUB_ENV
+          echo "CFLAGS_aarch64_unknown_linux_musl=$SQLITE_FLAGS" >> $GITHUB_ENV
+          echo "CPPFLAGS_aarch64_unknown_linux_musl=$SQLITE_FLAGS" >> $GITHUB_ENV
+        elif [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=-C target-feature=+crt-static -C link-self-contained=yes" >> $GITHUB_ENV
+          echo "CFLAGS_x86_64_unknown_linux_musl=$SQLITE_FLAGS" >> $GITHUB_ENV
+          echo "CPPFLAGS_x86_64_unknown_linux_musl=$SQLITE_FLAGS" >> $GITHUB_ENV
+        fi
+
+    - name: Build release binary
+      run: cargo +nightly build --release --target ${{ matrix.target }} -Z build-std=std,panic_abort -Z build-std-features="optimize_for_size" -Z build-std-features=panic_immediate_abort
+
+    - name: Strip binary (Linux and macOS)
+      if: matrix.os != 'windows-latest'
+      run: |
+        if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
+          aarch64-linux-gnu-strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+        else
+          strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+        fi
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.asset_name }}
+        path: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Prepare release assets
+      run: |
+        mkdir -p release-assets
+
+        # Linux x86_64
+        cp artifacts/augment-vip-linux-x86_64/augment-vip release-assets/augment-vip-linux-x86_64
+        chmod +x release-assets/augment-vip-linux-x86_64
+
+        # Linux ARM64
+        cp artifacts/augment-vip-linux-aarch64/augment-vip release-assets/augment-vip-linux-aarch64
+        chmod +x release-assets/augment-vip-linux-aarch64
+
+        # Windows x86_64
+        cp artifacts/augment-vip-windows-x86_64.exe/augment-vip.exe release-assets/augment-vip-windows-x86_64.exe
+
+        # Windows ARM64
+        cp artifacts/augment-vip-windows-aarch64.exe/augment-vip.exe release-assets/augment-vip-windows-aarch64.exe
+
+        # macOS x86_64
+        cp artifacts/augment-vip-macos-x86_64/augment-vip release-assets/augment-vip-macos-x86_64
+        chmod +x release-assets/augment-vip-macos-x86_64
+
+        # macOS ARM64
+        cp artifacts/augment-vip-macos-aarch64/augment-vip release-assets/augment-vip-macos-aarch64
+        chmod +x release-assets/augment-vip-macos-aarch64
+
+    - name: Get release info
+      id: release_info
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tag }}" ]; then
+          echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          echo "name=Release ${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+        else
+          # Use commit SHA for automatic releases
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          TIMESTAMP=$(date -u +"%Y%m%d-%H%M%S")
+          TAG="build-${TIMESTAMP}-${SHORT_SHA}"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "name=Build ${TIMESTAMP} (${SHORT_SHA})" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Create Release
+      id: create_release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Create release notes
+        cat > release_notes.md << 'EOF'
+        ## Commit Information
+
+        - **Commit**: ${{ github.sha }}
+        - **Author**: ${{ github.actor }}
+        - **Branch**: ${{ github.ref_name }}
+        - **Message**: ${{ github.event.head_commit.message }}
+
+        ## Downloads
+
+        - **Linux (x86_64)**: `augment-vip-linux-x86_64`
+        - **Linux (ARM64)**: `augment-vip-linux-aarch64`
+        - **Windows (x86_64)**: `augment-vip-windows-x86_64.exe`
+        - **Windows (ARM64)**: `augment-vip-windows-aarch64.exe`
+        - **macOS (Intel)**: `augment-vip-macos-x86_64`
+        - **macOS (Apple Silicon)**: `augment-vip-macos-aarch64`
+
+        ## Installation
+
+        1. Download the appropriate binary for your platform
+        2. Make it executable (Linux/macOS): `chmod +x <binary-name>`
+        3. Run the binary: `./<binary-name>` (Linux/macOS) or `<binary-name>.exe` (Windows)
+        EOF
+
+        # Create the release
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tag }}" ]; then
+          # Manual release (not prerelease)
+          gh release create "${{ steps.release_info.outputs.tag }}" \
+            --title "${{ steps.release_info.outputs.name }}" \
+            --notes-file release_notes.md \
+            release-assets/*
+        else
+          # Automatic release (prerelease)
+          gh release create "${{ steps.release_info.outputs.tag }}" \
+            --title "${{ steps.release_info.outputs.name }}" \
+            --notes-file release_notes.md \
+            --prerelease \
+            release-assets/*
+        fi
+
+

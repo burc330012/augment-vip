@@ -66,6 +66,7 @@ def list_installations():
     for i, installation in enumerate(installations, 1):
         info(f"\n{i}. {installation['name']}")
         info(f"   Path: {installation['path']}")
+        info(f"   Pattern: {installation['pattern_used']}")
         info(f"   Storage JSON: {'✓' if installation['storage_json_exists'] else '✗'} {installation['storage_json_path']}")
         info(f"   State DB: {'✓' if installation['state_db_exists'] else '✗'} {installation['state_db_path']}")
 

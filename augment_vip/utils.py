@@ -12,6 +12,30 @@ import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
+# VS Code installation patterns - each variant can have multiple possible directory structures
+VSCODE_PATTERNS = {
+    "VS Code": [
+        ["Code", "User"],
+    ],
+    "VS Code Insiders": [
+        ["Code - Insiders", "User"],
+    ],
+    "VS Code Server": [
+        [".vscode-server", "data", "User"],  # Standard pattern
+        [".vscode-server", "User"],          # Alternative pattern
+    ],
+    "VS Code Server (Insiders)": [
+        [".vscode-server-insiders", "data", "User"],  # Standard pattern
+        [".vscode-server-insiders", "User"],          # Alternative pattern (likely fix for Linux)
+    ],
+    "VSCodium": [
+        ["VSCodium", "User"],
+    ],
+    "Code-OSS": [
+        ["Code - OSS", "User"],
+    ],
+}
+
 # Console colors
 try:
     from colorama import init, Fore, Style
@@ -47,19 +71,15 @@ except ImportError:
     def error(msg: str) -> None:
         print(f"[ERROR] {msg}")
 
-def get_vscode_paths() -> Dict[str, Path]:
+def get_base_directories() -> List[Path]:
     """
-    Get VS Code paths based on the operating system.
-    Checks multiple VS Code installation locations in priority order.
+    Get base directories to search for VS Code installations based on OS
 
     Returns:
-        Dict with paths to VS Code directories and files
+        List of base directory paths
     """
     system = platform.system()
-    paths = {}
-
-    # Define possible VS Code installation paths in priority order
-    possible_paths = []
+    base_dirs = []
 
     if system == "Windows":
         appdata = os.environ.get("APPDATA")
@@ -67,82 +87,68 @@ def get_vscode_paths() -> Dict[str, Path]:
         if not appdata:
             error("APPDATA environment variable not found")
             sys.exit(1)
-
-        # Windows paths in priority order
-        possible_paths = [
-            Path(appdata) / "Code" / "User",                    # Standard VS Code
-            Path(appdata) / "Code - Insiders" / "User",         # VS Code Insiders
-            Path(userprofile) / ".vscode-server" / "data" / "User" if userprofile else None,  # Remote VS Code
-            Path(userprofile) / ".vscode-server-insiders" / "data" / "User" if userprofile else None,  # Remote Insiders
-            Path(appdata) / "VSCodium" / "User",                # VSCodium
-            Path(appdata) / "Code - OSS" / "User",              # Code-OSS
-        ]
-        # Filter out None values
-        possible_paths = [p for p in possible_paths if p is not None]
+        base_dirs = [Path(appdata), Path(userprofile) if userprofile else None]
 
     elif system == "Darwin":  # macOS
         app_support = Path.home() / "Library" / "Application Support"
-        possible_paths = [
-            app_support / "Code" / "User",                      # Standard VS Code
-            app_support / "Code - Insiders" / "User",           # VS Code Insiders
-            Path.home() / ".vscode-server" / "data" / "User",   # Remote VS Code
-            Path.home() / ".vscode-server-insiders" / "data" / "User",  # Remote Insiders
-            app_support / "VSCodium" / "User",                  # VSCodium
-            app_support / "Code - OSS" / "User",                # Code-OSS
-        ]
+        base_dirs = [app_support, Path.home()]
 
     elif system == "Linux":
         config_dir = Path.home() / ".config"
-        possible_paths = [
-            config_dir / "Code" / "User",                       # Standard VS Code
-            config_dir / "Code - Insiders" / "User",            # VS Code Insiders
-            Path.home() / ".vscode-server" / "data" / "User",   # Remote VS Code
-            Path.home() / ".vscode-server-insiders" / "data" / "User",  # Remote Insiders
-            config_dir / "VSCodium" / "User",                   # VSCodium
-            config_dir / "Code - OSS" / "User",                 # Code-OSS
-        ]
+        base_dirs = [config_dir, Path.home()]
 
     else:
         error(f"Unsupported operating system: {system}")
         sys.exit(1)
 
-    # Find the first existing VS Code installation
-    base_dir = None
-    installation_type = None
+    # Filter out None values
+    return [base_dir for base_dir in base_dirs if base_dir is not None]
 
-    for path in possible_paths:
-        if path.exists():
-            base_dir = path
-            # Determine installation type for logging
-            if "Code - Insiders" in str(path):
-                installation_type = "VS Code Insiders"
-            elif "vscode-server-insiders" in str(path):
-                installation_type = "VS Code Server (Insiders)"
-            elif "vscode-server" in str(path):
-                installation_type = "VS Code Server"
-            elif "VSCodium" in str(path):
-                installation_type = "VSCodium"
-            elif "Code - OSS" in str(path):
-                installation_type = "Code-OSS"
-            else:
-                installation_type = "VS Code"
-            break
+def get_vscode_paths() -> Dict[str, Path]:
+    """
+    Get VS Code paths using pattern-based detection.
+    Checks multiple patterns for each VS Code variant to handle different directory structures.
 
-    if base_dir is None:
-        error("No VS Code installation found. Checked the following locations:")
-        for path in possible_paths:
-            error(f"  - {path}")
-        sys.exit(1)
+    Returns:
+        Dict with paths to VS Code directories and files
+    """
+    base_dirs = get_base_directories()
 
-    info(f"Found {installation_type} installation at: {base_dir}")
+    # Try each VS Code variant with multiple patterns in priority order
+    for variant_name, patterns in VSCODE_PATTERNS.items():
+        for pattern in patterns:
+            for base_dir in base_dirs:
+                # Build the full path by joining pattern segments
+                candidate_path = base_dir
+                for segment in pattern:
+                    candidate_path = candidate_path / segment
 
-    # Common paths
-    paths["base_dir"] = base_dir
-    paths["installation_type"] = installation_type
-    paths["storage_json"] = base_dir / "globalStorage" / "storage.json"
-    paths["state_db"] = base_dir / "globalStorage" / "state.vscdb"
+                # Check if this path exists
+                if candidate_path.exists():
+                    pattern_used = " / ".join(pattern)
+                    info(f"Found {variant_name} installation at: {candidate_path}")
+                    info(f"Using pattern: {pattern_used}")
 
-    return paths
+                    # Return the found installation
+                    return {
+                        "base_dir": candidate_path,
+                        "installation_type": variant_name,
+                        "pattern_used": pattern_used,
+                        "storage_json": candidate_path / "globalStorage" / "storage.json",
+                        "state_db": candidate_path / "globalStorage" / "state.vscdb"
+                    }
+
+    # No installation found - show detailed error with all checked patterns
+    error("No VS Code installation found. Checked the following patterns:")
+    for variant_name, patterns in VSCODE_PATTERNS.items():
+        error(f"  {variant_name}:")
+        for pattern in patterns:
+            for base_dir in base_dirs:
+                candidate_path = base_dir
+                for segment in pattern:
+                    candidate_path = candidate_path / segment
+                error(f"    - {candidate_path}")
+    sys.exit(1)
 
 def backup_file(file_path: Path) -> Path:
     """
@@ -174,67 +180,41 @@ def generate_device_id() -> str:
 
 def list_all_vscode_installations() -> List[Dict[str, Any]]:
     """
-    List all available VS Code installations on the system
+    List all available VS Code installations using pattern-based detection
 
     Returns:
         List of dictionaries containing installation info
     """
-    system = platform.system()
+    base_dirs = get_base_directories()
     installations = []
+    found_variants = set()  # Track which variants we've already found
 
-    # Define possible VS Code installation paths
-    possible_paths = []
+    # Check each variant with all patterns
+    for variant_name, patterns in VSCODE_PATTERNS.items():
+        for pattern in patterns:
+            for base_dir in base_dirs:
+                # Build the full path
+                candidate_path = base_dir
+                for segment in pattern:
+                    candidate_path = candidate_path / segment
 
-    if system == "Windows":
-        appdata = os.environ.get("APPDATA")
-        userprofile = os.environ.get("USERPROFILE")
-        if appdata:
-            possible_paths = [
-                (Path(appdata) / "Code" / "User", "VS Code"),
-                (Path(appdata) / "Code - Insiders" / "User", "VS Code Insiders"),
-                (Path(userprofile) / ".vscode-server" / "data" / "User" if userprofile else None, "VS Code Server"),
-                (Path(userprofile) / ".vscode-server-insiders" / "data" / "User" if userprofile else None, "VS Code Server (Insiders)"),
-                (Path(appdata) / "VSCodium" / "User", "VSCodium"),
-                (Path(appdata) / "Code - OSS" / "User", "Code-OSS"),
-            ]
+                # Check if this path exists and we haven't found this variant yet
+                if candidate_path.exists() and variant_name not in found_variants:
+                    storage_json = candidate_path / "globalStorage" / "storage.json"
+                    state_db = candidate_path / "globalStorage" / "state.vscdb"
+                    pattern_used = " / ".join(pattern)
 
-    elif system == "Darwin":  # macOS
-        app_support = Path.home() / "Library" / "Application Support"
-        possible_paths = [
-            (app_support / "Code" / "User", "VS Code"),
-            (app_support / "Code - Insiders" / "User", "VS Code Insiders"),
-            (Path.home() / ".vscode-server" / "data" / "User", "VS Code Server"),
-            (Path.home() / ".vscode-server-insiders" / "data" / "User", "VS Code Server (Insiders)"),
-            (app_support / "VSCodium" / "User", "VSCodium"),
-            (app_support / "Code - OSS" / "User", "Code-OSS"),
-        ]
+                    installations.append({
+                        "name": variant_name,
+                        "path": candidate_path,
+                        "pattern_used": pattern_used,
+                        "storage_json_exists": storage_json.exists(),
+                        "state_db_exists": state_db.exists(),
+                        "storage_json_path": storage_json,
+                        "state_db_path": state_db
+                    })
 
-    elif system == "Linux":
-        config_dir = Path.home() / ".config"
-        possible_paths = [
-            (config_dir / "Code" / "User", "VS Code"),
-            (config_dir / "Code - Insiders" / "User", "VS Code Insiders"),
-            (Path.home() / ".vscode-server" / "data" / "User", "VS Code Server"),
-            (Path.home() / ".vscode-server-insiders" / "data" / "User", "VS Code Server (Insiders)"),
-            (config_dir / "VSCodium" / "User", "VSCodium"),
-            (config_dir / "Code - OSS" / "User", "Code-OSS"),
-        ]
-
-    # Filter out None values and check which installations exist
-    for path_info in possible_paths:
-        if path_info[0] is not None and path_info[0].exists():
-            path, name = path_info
-            # Check if the required files exist
-            storage_json = path / "globalStorage" / "storage.json"
-            state_db = path / "globalStorage" / "state.vscdb"
-
-            installations.append({
-                "name": name,
-                "path": path,
-                "storage_json_exists": storage_json.exists(),
-                "state_db_exists": state_db.exists(),
-                "storage_json_path": storage_json,
-                "state_db_path": state_db
-            })
+                    found_variants.add(variant_name)
+                    break  # Found this variant, don't check other patterns for it
 
     return installations
